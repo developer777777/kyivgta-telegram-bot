@@ -1110,22 +1110,44 @@ bot.action(/^reject_bind_(.+)$/, async (ctx) => {
 bot.action(/^approve_login_(.+)$/, async (ctx) => {
     try {
         const token = ctx.match[1];
+        let isCabinet = false;
+
         if (dbPool && dbConnected) {
+            const [rows] = await dbPool.execute('SELECT mode FROM ugta_player_telegram2fa_requests WHERE token = ? LIMIT 1', [token]);
+            if (rows && rows.length > 0) {
+                isCabinet = rows[0].mode === 'cabinet_login' || rows[0].mode === 'cabinet';
+            }
             await dbPool.execute('UPDATE ugta_player_telegram2fa_requests SET status = "approved" WHERE token = ? AND status = "pending"', [token]);
         }
         await ctx.answerCbQuery('✅ Вхід дозволено!').catch(() => {});
-        return ctx.editMessageText(`✅ <b>Вхід успішно підтверджено!</b>\n\n🎮 <b>Статус:</b> Дозвіл надано\n🕒 <b>Час:</b> ${formatDate()}\n\n<i>Приємної гри на сервері KYIV GTA!</i>`, { parse_mode: 'HTML' }).catch(() => {});
+
+        const text = isCabinet 
+            ? `✅ <b>Вхід до Особистого Кабінету підтверджено!</b>\n\n💼 <b>Статус:</b> Дозвіл надано\n🕒 <b>Час:</b> ${formatDate()}\n\n<i>Ви можете перейти до вкладки кабінету.</i>`
+            : `✅ <b>Вхід у гру успішно підтверджено!</b>\n\n🎮 <b>Статус:</b> Дозвіл надано\n🕒 <b>Час:</b> ${formatDate()}\n\n<i>Приємної гри на сервері KYIV GTA!</i>`;
+
+        return ctx.editMessageText(text, { parse_mode: 'HTML' }).catch(() => {});
     } catch (err) {}
 });
 
 bot.action(/^reject_login_(.+)$/, async (ctx) => {
     try {
         const token = ctx.match[1];
+        let isCabinet = false;
+
         if (dbPool && dbConnected) {
+            const [rows] = await dbPool.execute('SELECT mode FROM ugta_player_telegram2fa_requests WHERE token = ? LIMIT 1', [token]);
+            if (rows && rows.length > 0) {
+                isCabinet = rows[0].mode === 'cabinet_login' || rows[0].mode === 'cabinet';
+            }
             await dbPool.execute('UPDATE ugta_player_telegram2fa_requests SET status = "rejected" WHERE token = ? AND status = "pending"', [token]);
         }
         await ctx.answerCbQuery('🚨 Вхід відхилено!').catch(() => {});
-        return ctx.editMessageText('🚨 <b>Вхід у гру відхилено!</b>\n\nЯкщо ви не намагалися увійти в акаунт — <b>негайно змініть пароль</b> від ігрового акаунту!', { parse_mode: 'HTML' }).catch(() => {});
+
+        const text = isCabinet
+            ? `🚨 <b>Вхід до Особистого Кабінету відхилено!</b>\n\nЯкщо це були не ви — негайно змініть пароль від вашого акаунту!`
+            : `🚨 <b>Вхід у гру відхилено!</b>\n\nЯкщо ви не намагалися увійти в акаунт — <b>негайно змініть пароль</b> від ігрового акаунту!`;
+
+        return ctx.editMessageText(text, { parse_mode: 'HTML' }).catch(() => {});
     } catch (err) {}
 });
 
