@@ -12,38 +12,44 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('⚠️ [Unhandled Rejection]:', reason);
 });
 
-// Завантаження конфігурації з змінних середовища або файлу
+// Простий HTTP сервер для Render Web Service (health check)
+const http = require('http');
+const PORT = process.env.PORT || 10000;
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('KYIV GTA 2FA Telegram Bot is Running 🟢');
+}).listen(PORT, () => {
+    console.log(`🌐 Health check сервер запущено на порту ${PORT}`);
+});
+
+// Завантаження конфігурації
+let fileConfig = {};
+const configPath = path.join(__dirname, 'config.json');
+if (fs.existsSync(configPath)) {
+    try {
+        fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    } catch (e) {}
+}
+
 const config = {
-    BOT_TOKEN: process.env.BOT_TOKEN,
-    DB_HOST: process.env.DB_HOST || '51.210.223.180',
-    DB_PORT: parseInt(process.env.DB_PORT) || 3306,
-    DB_USER: process.env.DB_USER || 'gs112661',
-    DB_PASSWORD: process.env.DB_PASSWORD,
-    DB_NAME: process.env.DB_NAME || 'gs112661',
-    POLL_INTERVAL_MS: parseInt(process.env.POLL_INTERVAL_MS) || 1000,
-    ADMIN_IDS: process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : ['2073246087'],
-    WEBSITE_URL: process.env.WEBSITE_URL || 'https://kyiv-rp.ua',
-    FORUM_URL: process.env.FORUM_URL || 'https://forum.kyiv-rp.ua',
-    SHOP_URL: process.env.SHOP_URL || 'https://kyiv-rp.ua/shop',
-    CABINET_URL: process.env.CABINET_URL || 'https://kyiv-rp.ua/cabinet',
-    DRAW_URL: process.env.DRAW_URL || 'https://t.me',
-    RESTORE_PASSWORD_URL: process.env.RESTORE_PASSWORD_URL || 'https://kyiv-rp.ua/restore',
-    IMAGES: {
-        TICKET_CLOSED: process.env.TICKET_CLOSED_IMAGE || 'images/ticket_closed.png'
+    BOT_TOKEN: process.env.BOT_TOKEN || fileConfig.BOT_TOKEN,
+    DB_HOST: process.env.DB_HOST || fileConfig.DB_HOST || '51.210.223.180',
+    DB_PORT: parseInt(process.env.DB_PORT) || fileConfig.DB_PORT || 3306,
+    DB_USER: process.env.DB_USER || fileConfig.DB_USER || 'gs112661',
+    DB_PASSWORD: process.env.DB_PASSWORD || fileConfig.DB_PASSWORD || 'OJifVDbDq5LJbMBLD4Xuxpx',
+    DB_NAME: process.env.DB_NAME || fileConfig.DB_NAME || 'gs112661',
+    POLL_INTERVAL_MS: parseInt(process.env.POLL_INTERVAL_MS) || fileConfig.POLL_INTERVAL_MS || 1000,
+    ADMIN_IDS: process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : (fileConfig.ADMIN_IDS || ['2073246087']),
+    WEBSITE_URL: process.env.WEBSITE_URL || fileConfig.WEBSITE_URL || 'https://kyivgta.netlify.app',
+    FORUM_URL: process.env.FORUM_URL || fileConfig.FORUM_URL || 'https://kyivgta.netlify.app',
+    SHOP_URL: process.env.SHOP_URL || fileConfig.SHOP_URL || 'https://kyivgta.netlify.app',
+    CABINET_URL: process.env.CABINET_URL || fileConfig.CABINET_URL || 'https://kyivgta.netlify.app',
+    DRAW_URL: process.env.DRAW_URL || fileConfig.DRAW_URL || 'https://kyivgta.netlify.app',
+    RESTORE_PASSWORD_URL: process.env.RESTORE_PASSWORD_URL || fileConfig.RESTORE_PASSWORD_URL || 'https://kyivgta.netlify.app',
+    IMAGES: fileConfig.IMAGES || {
+        TICKET_CLOSED: 'images/ticket_closed.png'
     }
 };
-
-// Якщо немає токена в ENV, пробуємо прочитати з файлу (для локальної розробки)
-if (!config.BOT_TOKEN) {
-    const configPath = path.join(__dirname, 'config.json');
-    if (fs.existsSync(configPath)) {
-        const fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        Object.assign(config, fileConfig);
-    } else {
-        console.error('❌ Помилка: BOT_TOKEN не знайдено в змінних середовища або config.json!');
-        process.exit(1);
-    }
-}
 
 if (!config.BOT_TOKEN || config.BOT_TOKEN === 'ВАШ_ТОКЕН_ВІД_BOTFATHER') {
     console.error('❌ Помилка: Вкажіть дійсний BOT_TOKEN у файлі config.json!');
