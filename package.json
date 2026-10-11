@@ -1,0 +1,13 @@
+{
+  "name": "kyivgta-telegram-2fa-bot",
+  "version": "1.0.0",
+  "description": "Telegram 2FA Bot for MTA Server (KYIV GTA)",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "mysql2": "^3.9.2",
+    "telegraf": "^4.16.3"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "BOT_TOKEN": "8911866993:AAE8bJHt8uPCBnPnVu6lumT_yh2P4bV6Z0M",
+  "BOT_USERNAME": "kyivgtabotbot",
+  "DB_HOST": "51.210.223.180",
+  "DB_PORT": 3306,
+  "DB_USER": "gs112661",
+  "DB_PASSWORD": "OJifVDbDq5LJbMBLD4Xuxpx",
+  "DB_NAME": "gs112661",
+  "POLL_INTERVAL_MS": 1000,
+  "ADMIN_IDS": [
+    "2073246087"
+  ],
+  "WEBSITE_URL": "https://kyivgta.netlify.app",
+  "FORUM_URL": "https://kyivgta.netlify.app",
+  "SHOP_URL": "https://kyivgta.netlify.app",
+  "CABINET_URL": "https://kyivgta.netlify.app",
+  "DRAW_URL": "https://kyivgta.netlify.app",
+  "RESTORE_PASSWORD_URL": "https://kyivgta.netlify.app",
+  "IMAGES": {
+    "TICKET_CLOSED": "images/ticket_closed.png"
+  }
+}

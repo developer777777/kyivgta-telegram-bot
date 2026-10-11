@@ -1,0 +1,27 @@
+=== ІНСТРУКЦІЯ ДЕПЛОЮ БОТА ===
+
+1. Відкрийте: https://github.com/new
+
+2. Створіть НОВИЙ репозиторій:
+   - Name: ghost-gta-telegram-bot
+   - Private (приватний)
+   - Add a README file: ТАК
+   - Натисніть "Create repository"
+
+3. У новому репозиторії натисніть "Add file" → "Upload files"
+
+4. Завантажте ці файли з папки:
+   C:\Users\user\Desktop\Vladi4ka 4.1\ugta_serverAPI\Bot
+   
+   Файли:
+   - bot.js
+   - package.json
+   - package-lock.json
+   - railway.toml
+   - runtime.txt
+   - .gitignore
+   - .env.example
+
+5. Натисніть "Commit changes"
+
+6. Після цього відкрийте Railway.app і підключіть репозиторій
