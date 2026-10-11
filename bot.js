@@ -277,6 +277,21 @@ bot.start(async (ctx) => {
                     const playerId = reqData.player_id;
                     const dbToken = reqData.token;
 
+                    // Перевіряємо, чи цей Telegram не прив'язаний до іншого акаунту
+                    const [existing] = await dbPool.execute(
+                        'SELECT id, nickname FROM ugta_players WHERE telegram_id = ? AND id != ? LIMIT 1',
+                        [String(userId), playerId]
+                    );
+                    if (existing && existing.length > 0) {
+                        return ctx.replyWithHTML(
+                            `❌ <b>Помилка прив'язки!</b>\n\nВаш Telegram вже прив'язано до персонажа: <b>${existing[0].nickname}</b> (ID: #${existing[0].id}).\n\n⚠️ <i>Один Telegram можна прив'язати лише до одного акаунту гри. Прив'язати ще один акаунт не можна!</i>\n\nЯкщо ви хочете підключити цей акаунт — спочатку відв'яжіть старий:`,
+                            Markup.inlineKeyboard([
+                                [Markup.button.callback('🔓 Відв\'язати старий акаунт', 'unbind_cabinet')],
+                                [Markup.button.callback('◀️ Головне меню', 'back_to_main')]
+                            ])
+                        );
+                    }
+
                     const text = 
 `🛡️ <b>KYIV GTA | Захист акаунту</b>
 
@@ -712,8 +727,29 @@ bot.action('menu_cabinet', async (ctx) => {
 // Ручна прив'язка
 bot.action('bind_account_manual', async (ctx) => {
     const userId = ctx.from.id;
-    userStates.set(userId, { step: 'awaiting_nickname' });
     await ctx.answerCbQuery().catch(() => {});
+
+    // Перевіряємо, чи користувач вже має прив'язаний акаунт
+    if (dbPool && dbConnected) {
+        try {
+            const [rows] = await dbPool.execute(
+                'SELECT id, nickname, email FROM ugta_players WHERE telegram_id = ? LIMIT 1',
+                [String(userId)]
+            );
+            if (rows && rows.length > 0) {
+                const p = rows[0];
+                return ctx.replyWithHTML(
+                    `❌ <b>До вашого Telegram вже прив'язано акаунт!</b>\n\n👤 <b>Нікнейм:</b> <code>${p.nickname}</code> (ID: #${p.id})\n📧 <b>Пошта:</b> <code>${p.email}</code>\n\n⚠️ <i>Один Telegram можна прив'язати лише до одного акаунту гри. Прив'язати другий акаунт не можна!</i>\n\nЯкщо ви хочете підключити інший акаунт — спочатку натисніть кнопку нижче:`,
+                    Markup.inlineKeyboard([
+                        [Markup.button.callback('🔓 Відв\'язати поточний акаунт', 'unbind_cabinet')],
+                        [Markup.button.callback('◀️ Головне меню', 'back_to_main')]
+                    ])
+                );
+            }
+        } catch (e) {}
+    }
+
+    userStates.set(userId, { step: 'awaiting_nickname' });
 
     const msg = 
 `🔐 <b>Прив'язка акаунту KYIV GTA</b>
@@ -897,6 +933,19 @@ ${text}
                     }
 
                     const player = rows[0];
+
+                    // Перевіряємо, чи цей Telegram не прив'язаний до іншого акаунту
+                    const [existing] = await dbPool.execute(
+                        'SELECT id, nickname FROM ugta_players WHERE telegram_id = ? AND id != ? LIMIT 1',
+                        [String(userId), player.id]
+                    );
+                    if (existing && existing.length > 0) {
+                        return ctx.replyWithHTML(
+                            `❌ <b>Помилка підключення!</b>\n\nВаш Telegram вже підключено до іншого ігрового акаунту: <b>${existing[0].nickname}</b> (ID: #${existing[0].id}).\n\nОдин Telegram можна прив'язати лише до одного акаунту!`,
+                            getMainMenuKeyboard(userId)
+                        );
+                    }
+
                     await dbPool.execute(
                         'UPDATE ugta_players SET telegram_id = ?, telegram_2fa_enabled = 1 WHERE id = ?',
                         [String(userId), player.id]
@@ -1091,6 +1140,20 @@ bot.action(/^approve_bind_(.+)$/, async (ctx) => {
         }
 
         const reqData = rows[0];
+
+        // Перевіряємо, чи цей Telegram вже не прив'язаний до іншого акаунту
+        const [existing] = await dbPool.execute(
+            'SELECT id, nickname FROM ugta_players WHERE telegram_id = ? AND id != ? LIMIT 1',
+            [telegramId, reqData.player_id]
+        );
+        if (existing && existing.length > 0) {
+            await ctx.answerCbQuery('❌ Telegram вже прив’язано!').catch(() => {});
+            return ctx.editMessageText(
+                `❌ <b>Помилка прив'язки!</b>\n\nЦей Telegram вже прив'язано до іншого персонажа: <b>${existing[0].nickname}</b> (ID: #${existing[0].id}).\n\nОдин Telegram можна підключити лише до одного акаунту гри!`,
+                { parse_mode: 'HTML' }
+            ).catch(() => {});
+        }
+
         await dbPool.execute('UPDATE ugta_player_telegram2fa_requests SET status = "approved", telegram_id = ? WHERE id = ?', [telegramId, reqData.id]);
         await dbPool.execute('UPDATE ugta_players SET telegram_id = ?, telegram_2fa_enabled = 1 WHERE id = ?', [telegramId, reqData.player_id]);
 
