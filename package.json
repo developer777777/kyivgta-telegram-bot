@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "mysql2": "^3.9.2",
+    "ssh2": "^1.17.0",
     "telegraf": "^4.16.3"
   }
 }

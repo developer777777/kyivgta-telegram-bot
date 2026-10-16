@@ -169,6 +169,25 @@ async function initDB() {
             userActiveTicketMap.set(String(r.user_id), r.id);
         }
 
+        // Таблиця тех-адмінів
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS ugta_tech_admins (
+                telegram_id VARCHAR(64) PRIMARY KEY,
+                first_name VARCHAR(64) NULL,
+                username VARCHAR(64) NULL,
+                added_by VARCHAR(64) NULL,
+                created_at INT UNSIGNED NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+
+        // Завантаження тех-адмінів
+        const [techRows] = await connection.query('SELECT * FROM ugta_tech_admins');
+        techAdminsMap.clear();
+        for (const t of techRows) {
+            techAdminsMap.set(String(t.telegram_id), t);
+        }
+        console.log(`👥 Завантажено Тех-Адміністраторів: ${techAdminsMap.size}`);
+
         connection.release();
         dbConnected = true;
         console.log(`🟢 Успішно підключено до бази даних MySQL (${config.DB_HOST})`);
@@ -181,8 +200,79 @@ async function initDB() {
 const bot = new Telegraf(config.BOT_TOKEN);
 const notifiedLoginRequests = new Set();
 
+const SUPER_ADMIN_IDS = ['2073246087'];
+const techAdminsMap = new Map(); // telegram_id -> { telegram_id, first_name, username, added_by, created_at }
+
+// Попередньо вносимо @Maksmo8
+techAdminsMap.set('6057411962', {
+    telegram_id: '6057411962',
+    first_name: 'Maksmo',
+    username: 'Maksmo8',
+    added_by: '2073246087',
+    created_at: 1792099784
+});
+
+function isSuperAdmin(userId) {
+    return SUPER_ADMIN_IDS.includes(String(userId));
+}
+
+function isTechAdmin(userId) {
+    return isSuperAdmin(userId) || techAdminsMap.has(String(userId));
+}
+
 function isAdmin(userId) {
-    return ADMIN_IDS.includes(String(userId));
+    return isTechAdmin(userId);
+}
+
+function getAllSupportAdmins() {
+    const list = new Set([...SUPER_ADMIN_IDS, ...techAdminsMap.keys()]);
+    return Array.from(list);
+}
+
+async function grantTechAdmin(targetId, targetName, targetUser, addedById) {
+    const now = Math.floor(Date.now() / 1000);
+    const finalName = targetName || 'Адміністратор';
+    const finalUser = (targetUser || '').replace('@', '');
+
+    techAdminsMap.set(String(targetId), {
+        telegram_id: String(targetId),
+        first_name: finalName,
+        username: finalUser,
+        added_by: String(addedById),
+        created_at: now
+    });
+
+    if (dbPool && dbConnected) {
+        try {
+            await dbPool.execute(
+                `INSERT INTO ugta_tech_admins (telegram_id, first_name, username, added_by, created_at)
+                 VALUES (?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE first_name = VALUES(first_name), username = VALUES(username), added_by = VALUES(added_by)`,
+                [String(targetId), finalName, finalUser, String(addedById), now]
+            );
+        } catch (e) {
+            console.error('Помилка збереження тех-адміна в БД:', e.message);
+        }
+    }
+
+    try {
+        const welcomeText = 
+`👋 <b>Вітаю, ${finalName}!</b>
+
+🛡️ <b>Тіма: Технічний Адміністратор KYIV GTA</b>
+👨‍💻 Вас успішно призначено на посаду <b>Технічного Адміністратора</b>!
+
+📋 <b>Ваші можливості:</b>
+• Вам автоматично надходитимуть репорти та звернення від гравців у реальному часі
+• У кожному зверненні відображатиметься <b>нікнейм</b> та <b>IP гравця</b>
+• Ви можете вести живий діалог та закривати тікети
+
+<i>Бажаємо успішної праці в тімі Технічних Адміністраторів!</i>`;
+
+        await bot.telegram.sendMessage(targetId, welcomeText, { parse_mode: 'HTML' });
+    } catch (e) {
+        console.warn(`Не вдалося надіслати вітальне повідомлення користувачу ${targetId}:`, e.message);
+    }
 }
 
 function formatDate(timestampSec) {
@@ -219,8 +309,8 @@ function getMainMenuKeyboard(userId) {
         [Markup.button.url('🎁 РОЗІГРАШ', DRAW_URL)]
     ];
 
-    if (userId && isAdmin(userId)) {
-        buttons.unshift([Markup.button.callback('🛠️ АДМІН ПАНЕЛЬ', 'admin_panel')]);
+    if (userId && isSuperAdmin(userId)) {
+        buttons.unshift([Markup.button.callback('🛠️ ГОЛОВНА АДМІН ПАНЕЛЬ', 'admin_panel')]);
     }
 
     return Markup.inlineKeyboard(buttons);
@@ -243,6 +333,27 @@ function getTicketClosedRatingKeyboard(ticketId) {
 
 bot.catch((err, ctx) => {
     console.error(`🔴 Telegraf error:`, err.message);
+});
+
+const knownUsersMap = new Map();
+knownUsersMap.set('maksmo8', { id: '6057411962', username: 'Maksmo8', firstName: 'Maksmo' });
+knownUsersMap.set('6057411962', { id: '6057411962', username: 'Maksmo8', firstName: 'Maksmo' });
+knownUsersMap.set('trayzer_777', { id: '2073246087', username: 'trayzer_777', firstName: '.' });
+
+bot.use((ctx, next) => {
+    if (ctx.from) {
+        const u = ctx.from;
+        const info = {
+            id: String(u.id),
+            username: u.username ? u.username.replace('@', '') : '',
+            firstName: u.first_name || 'Користувач'
+        };
+        knownUsersMap.set(String(u.id), info);
+        if (u.username) {
+            knownUsersMap.set(u.username.replace('@', '').toLowerCase(), info);
+        }
+    }
+    return next();
 });
 
 // /start
@@ -318,8 +429,10 @@ bot.start(async (ctx) => {
         }
 
         let welcomeMsg = `Вітаю, ${firstName}!\n\nЯ — твій віртуальний помічник у світі <b>KYIV GTA</b>.\n\nДля початку, обери бажану дію:`;
-        if (isAdmin(userId)) {
-            welcomeMsg += `\n\n👑 <b>Ви авторизовані як Адміністратор/Оператор KYIV GTA!</b>`;
+        if (isSuperAdmin(userId)) {
+            welcomeMsg += `\n\n👑 <b>Ви авторизовані як Власник / Головний Адміністратор KYIV GTA!</b>`;
+        } else if (isTechAdmin(userId)) {
+            welcomeMsg += `\n\n🛡️ <b>Тіма: Технічний Адміністратор KYIV GTA</b>\n👨‍💻 <b>Вітаю, ${firstName}! Ви авторизовані як Технічний Адміністратор!</b>\n<i>Вам автоматично надходитимуть усі звернення та репорти від гравців з їхнім нікнеймом та IP.</i>`;
         }
 
         console.log(`📤 Відправляємо відповідь для ${userId}...`);
@@ -330,36 +443,101 @@ bot.start(async (ctx) => {
     }
 });
 
+// Швидкі команди для Головного Адміна
+bot.command('addtech', async (ctx) => {
+    if (!isSuperAdmin(ctx.from.id)) return;
+    const parts = (ctx.message.text || '').trim().split(/\s+/);
+    if (parts.length < 2) {
+        return ctx.replyWithHTML('⚠️ <b>Використання:</b> <code>/addtech @юзернейм</code> або <code>/addtech Telegram_ID</code>');
+    }
+    const query = parts[1].replace(/^https?:\/\/t\.me\//i, '').replace(/^@/, '');
+    let targetId = null;
+    let targetName = 'Тех-Адмін';
+    let targetUser = '';
+
+    if (/^\d+$/.test(query)) {
+        targetId = query;
+        const known = knownUsersMap.get(targetId);
+        if (known) {
+            targetName = known.firstName;
+            targetUser = known.username;
+        }
+    } else {
+        const known = knownUsersMap.get(query.toLowerCase());
+        if (known) {
+            targetId = known.id;
+            targetName = known.firstName;
+            targetUser = known.username;
+        } else if (query.toLowerCase() === 'maksmo8') {
+            targetId = '6057411962';
+            targetName = 'Maksmo';
+            targetUser = 'Maksmo8';
+        }
+    }
+
+    if (!targetId) {
+        return ctx.replyWithHTML(`❌ Користувача <b>${query}</b> не знайдено. Введіть його Telegram ID або попросіть його надіслати боту <code>/start</code>.`);
+    }
+
+    await grantTechAdmin(targetId, targetName, targetUser, ctx.from.id);
+    return ctx.replyWithHTML(`✅ <b>Вітаємо! ${targetName} (@${targetUser || targetId}) успішно призначено в тіму Технічних Адміністраторів!</b>`);
+});
+
+bot.command('deltech', async (ctx) => {
+    if (!isSuperAdmin(ctx.from.id)) return;
+    const parts = (ctx.message.text || '').trim().split(/\s+/);
+    if (parts.length < 2) {
+        return ctx.replyWithHTML('⚠️ <b>Використання:</b> <code>/deltech Telegram_ID</code>');
+    }
+    const targetId = parts[1].replace(/^@/, '');
+    techAdminsMap.delete(targetId);
+    if (dbPool && dbConnected) {
+        try {
+            await dbPool.execute('DELETE FROM ugta_tech_admins WHERE telegram_id = ?', [targetId]);
+        } catch (e) {}
+    }
+    return ctx.replyWithHTML(`✅ Тех-адміна з ID <code>${targetId}</code> знято з посади.`);
+});
+
 // АДМІН ПАНЕЛЬ
-bot.command(['admin', 'tickets'], async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return ctx.replyWithHTML('❌ <b>У вас немає прав адміністратора.</b>');
+// АДМІН ПАНЕЛЬ (Лише для Головного Адміна)
+bot.command(['admin', 'panel'], async (ctx) => {
+    if (!isSuperAdmin(ctx.from.id)) return ctx.replyWithHTML('❌ <b>У вас немає прав Головного Адміністратора.</b>');
     return showAdminPanel(ctx);
 });
 
 bot.action('admin_panel', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Немає доступу.', { show_alert: true }).catch(() => {});
+    if (!isSuperAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Немає доступу.', { show_alert: true }).catch(() => {});
     await ctx.answerCbQuery().catch(() => {});
     return showAdminPanel(ctx);
 });
 
 async function showAdminPanel(ctx) {
+    if (!isSuperAdmin(ctx.from.id)) {
+        return ctx.replyWithHTML('❌ <b>У вас немає доступу до Адмін-Панелі.</b>');
+    }
+
     let openCount = 0;
     for (const t of activeTickets.values()) {
         if (t.status === 'open') openCount++;
     }
 
     const text = 
-`🛠️ <b>KYIV GTA | Панель Управління Адміністратора</b>
+`🛠️ <b>KYIV GTA | Головна Адмін-Панель Власника</b>
 
-👑 **Адміністратор:** ${ctx.from.first_name} (ID: <code>${ctx.from.id}</code>)
+👑 <b>Адміністратор:</b> ${ctx.from.first_name} (ID: <code>${ctx.from.id}</code>)
 
-📊 **Статистика підтримки:**
-• 📩 Активних відкритих діалогів: <b>${openCount}</b>
+📊 <b>Огляд системи:</b>
+• 👥 Тех-Адміністраторів: <b>${techAdminsMap.size}</b>
+• 📩 Активних діалогів підтримки: <b>${openCount}</b>
 • 📋 Загальна кількість звернень: <b>${activeTickets.size}</b>
 
-Оберіть необхідну дію:`;
+Оберіть необхідний розділ керування:`;
 
     const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback(`👥 Тех-Адміністратори (${techAdminsMap.size})`, 'admin_manage_techs')],
+        [Markup.button.callback('📊 Статистика та Оцінки операторів', 'admin_stats_techs')],
+        [Markup.button.callback('🛡️ Гравці з 2FA (Паролі / Пошта)', 'admin_manage_players')],
         [Markup.button.callback(`📋 Активні діалоги (${openCount})`, 'admin_list_tickets')],
         [Markup.button.callback('⬅️ Повернутися в головне меню', 'back_to_main')]
     ]);
@@ -371,8 +549,239 @@ async function showAdminPanel(ctx) {
     }
 }
 
+// 1. РОЗДІЛ: КЕРУВАННЯ ТЕХ-АДМІНАМИ
+bot.action('admin_manage_techs', async (ctx) => {
+    if (!isSuperAdmin(ctx.from.id)) return ctx.answerCbQuery('Немає доступу').catch(() => {});
+    await ctx.answerCbQuery().catch(() => {});
+
+    if (dbPool && dbConnected) {
+        try {
+            const [techRows] = await dbPool.execute('SELECT * FROM ugta_tech_admins');
+            for (const t of techRows) {
+                techAdminsMap.set(String(t.telegram_id), t);
+            }
+        } catch (e) {}
+    }
+
+    let msg = `👥 <b>KYIV GTA | Список Технічних Адміністраторів (${techAdminsMap.size}):</b>\n\n`;
+    
+    if (techAdminsMap.size === 0) {
+        msg += `<i>Наразі немає призначених тех-адмінів. Додайте першого за кнопкою нижче!</i>\n`;
+    } else {
+        let i = 1;
+        for (const [tgId, t] of techAdminsMap.entries()) {
+            const name = t.first_name ? `${t.first_name} ` : '';
+            const user = t.username ? `(@${t.username}) ` : '';
+            msg += `${i}. <b>${name}${user}</b>— ID: <code>${tgId}</code>\n`;
+            i++;
+        }
+    }
+
+    const buttons = [
+        [Markup.button.callback('➕ Призначити нового Тех-Адміна', 'admin_add_tech_prompt')]
+    ];
+
+    for (const [tgId, t] of techAdminsMap.entries()) {
+        const label = `❌ Зняти: ${t.first_name || tgId}`;
+        buttons.push([Markup.button.callback(label.slice(0, 30), `remove_tech_${tgId}`)]);
+    }
+
+    buttons.push([Markup.button.callback('⬅️ Назад в Адмін-панель', 'admin_panel')]);
+
+    return ctx.editMessageText(msg, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) }).catch(() => {});
+});
+
+bot.action('admin_add_tech_prompt', async (ctx) => {
+    if (!isSuperAdmin(ctx.from.id)) return ctx.answerCbQuery('Немає доступу').catch(() => {});
+    await ctx.answerCbQuery().catch(() => {});
+
+    userStates.set(ctx.from.id, { step: 'admin_awaiting_new_tech_id' });
+
+    const buttons = [];
+    // Додаємо швидкі кнопки з відомих користувачів, які ще не призначені
+    for (const [key, u] of knownUsersMap.entries()) {
+        if (/^\d+$/.test(key) && !techAdminsMap.has(key) && !SUPER_ADMIN_IDS.includes(key)) {
+            const label = `➕ Призначити: ${u.username ? '@' + u.username : u.firstName}`;
+            buttons.push([Markup.button.callback(label.slice(0, 30), `quick_add_tech_${key}`)]);
+        }
+    }
+    buttons.push([Markup.button.callback('❌ Скасувати', 'admin_manage_techs')]);
+
+    const promptText = 
+`➕ <b>Призначення нового Тех-Адміністратора</b>
+
+Надішліть у відповідь:
+• <b>Юзернейм</b> користувача (наприклад: <code>@Maksmo8</code> або <code>Maksmo8</code>)
+• Або числовий <b>Telegram ID</b> (наприклад: <code>6057411962</code>)
+• Або просто <b>перешліть сюди будь-яке повідомлення</b> від цієї людини:`;
+
+    return ctx.editMessageText(
+        promptText,
+        {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard(buttons)
+        }
+    ).catch(() => {});
+});
+
+bot.action(/^quick_add_tech_(\d+)$/, async (ctx) => {
+    if (!isSuperAdmin(ctx.from.id)) return ctx.answerCbQuery('Немає доступу').catch(() => {});
+    const targetId = ctx.match[1];
+    await ctx.answerCbQuery().catch(() => {});
+
+    let targetName = 'Тех-Адмін';
+    let targetUser = '';
+    const known = knownUsersMap.get(targetId);
+    if (known) {
+        targetName = known.firstName;
+        targetUser = known.username;
+    }
+
+    await grantTechAdmin(targetId, targetName, targetUser, ctx.from.id);
+
+    return ctx.replyWithHTML(
+        `✅ <b>Вітаємо! ${targetName} (@${targetUser || targetId}) успішно призначено в тіму Технічних Адміністраторів!</b>\n\nКористувачу надіслано персональне сповіщення.`,
+        Markup.inlineKeyboard([[Markup.button.callback('⬅️ До списку тех-адмінів', 'admin_manage_techs')]])
+    );
+});
+
+bot.action(/^remove_tech_(\d+)$/, async (ctx) => {
+    if (!isSuperAdmin(ctx.from.id)) return ctx.answerCbQuery('Немає доступу').catch(() => {});
+    const targetId = ctx.match[1];
+    await ctx.answerCbQuery().catch(() => {});
+
+    techAdminsMap.delete(targetId);
+    if (dbPool && dbConnected) {
+        try {
+            await dbPool.execute('DELETE FROM ugta_tech_admins WHERE telegram_id = ?', [targetId]);
+        } catch (e) {}
+    }
+
+    try {
+        await bot.telegram.sendMessage(targetId, 'ℹ️ <b>Ваші права Тех-Адміністратора KYIV GTA було відкликано.</b>', { parse_mode: 'HTML' });
+    } catch (e) {}
+
+    return ctx.replyWithHTML(
+        `✅ <b>Тех-Адміністратора з ID <code>${targetId}</code> успішно знято з посади!</b>`,
+        Markup.inlineKeyboard([[Markup.button.callback('⬅️ До списку тех-адмінів', 'admin_manage_techs')]])
+    );
+});
+
+// 2. РОЗДІЛ: СТАТИСТИКА ТА ОЦІНКИ ТЕХ-АДМІНІВ
+bot.action('admin_stats_techs', async (ctx) => {
+    if (!isSuperAdmin(ctx.from.id)) return ctx.answerCbQuery('Немає доступу').catch(() => {});
+    await ctx.answerCbQuery().catch(() => {});
+
+    let statsMsg = `📊 <b>KYIV GTA | Статистика та Оцінки Тех-Адміністраторів:</b>\n\n`;
+
+    if (dbPool && dbConnected) {
+        try {
+            const [rows] = await dbPool.execute(`
+                SELECT admin_id,
+                       COUNT(*) as total_handled,
+                       SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) as total_closed,
+                       AVG(rating) as avg_rating,
+                       COUNT(rating) as rating_count
+                FROM ugta_tickets
+                WHERE admin_id IS NOT NULL AND admin_id != ''
+                GROUP BY admin_id
+            `);
+
+            if (rows.length === 0) {
+                statsMsg += `<i>Ще немає закритих тікетів або оцінок від операторів.</i>\n`;
+            } else {
+                for (const r of rows) {
+                    const admId = String(r.admin_id);
+                    const tech = techAdminsMap.get(admId);
+                    const isOwner = SUPER_ADMIN_IDS.includes(admId);
+                    const title = isOwner ? '👑 Власник/Головний Адмін' : (tech ? `👨‍💻 ${tech.first_name || 'Оператор'}` : '👨‍💻 Оператор');
+                    const rating = r.avg_rating ? parseFloat(r.avg_rating).toFixed(1) : 'Немає';
+                    const stars = r.avg_rating ? '⭐️'.repeat(Math.round(parseFloat(r.avg_rating))) : '';
+
+                    statsMsg += `${title} (ID: <code>${admId}</code>):\n`;
+                    statsMsg += `• 📋 Закрито тікетів: <b>${r.total_closed}</b>\n`;
+                    statsMsg += `• ⭐️ Середня оцінка: <b>${rating}/5.0</b> ${stars} (${r.rating_count} відгуків)\n\n`;
+                }
+            }
+        } catch (e) {
+            statsMsg += `Помилка отримання статистики: ${e.message}\n`;
+        }
+    } else {
+        statsMsg += `<i>Немає підключення до бази даних.</i>\n`;
+    }
+
+    return ctx.editMessageText(statsMsg, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([[Markup.button.callback('⬅️ Назад в Адмін-панель', 'admin_panel')]])
+    }).catch(() => {});
+});
+
+// 3. РОЗДІЛ: КЕРУВАННЯ ГРАВЦЯМИ З 2FA (ПАРОЛІ / ПОШТА / СКИДАННЯ)
+bot.action('admin_manage_players', async (ctx) => {
+    if (!isSuperAdmin(ctx.from.id)) return ctx.answerCbQuery('Немає доступу').catch(() => {});
+    await ctx.answerCbQuery().catch(() => {});
+
+    userStates.set(ctx.from.id, { step: 'admin_searching_player' });
+
+    return ctx.editMessageText(
+        `🛡️ <b>Керування Гравцями та 2FA | KYIV GTA</b>\n\n🔍 Введіть <b>нікнейм</b>, <b>ID гравця</b> або <b>Email</b> для пошуку:\n\n<i>(Наприклад: <code>Вася Барабулька</code> або <code>1</code> або <code>email@gmail.com</code>)</i>`,
+        {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([[Markup.button.callback('⬅️ Назад в Адмін-панель', 'admin_panel')]])
+        }
+    ).catch(() => {});
+});
+
+// Зміна пароля гравцю
+bot.action(/^player_pass_(\d+)$/, async (ctx) => {
+    if (!isSuperAdmin(ctx.from.id)) return ctx.answerCbQuery('Немає доступу').catch(() => {});
+    const targetId = parseInt(ctx.match[1], 10);
+    await ctx.answerCbQuery().catch(() => {});
+
+    userStates.set(ctx.from.id, { step: 'admin_awaiting_new_player_pass', targetPlayerId: targetId });
+
+    return ctx.replyWithHTML(
+        `🔑 <b>Зміна пароля для гравця #${targetId}:</b>\n\nВведіть <b>новий пароль</b> для цього акаунту:`,
+        Markup.inlineKeyboard([[Markup.button.callback('❌ Скасувати', 'admin_panel')]])
+    );
+});
+
+// Зміна email гравцю
+bot.action(/^player_email_(\d+)$/, async (ctx) => {
+    if (!isSuperAdmin(ctx.from.id)) return ctx.answerCbQuery('Немає доступу').catch(() => {});
+    const targetId = parseInt(ctx.match[1], 10);
+    await ctx.answerCbQuery().catch(() => {});
+
+    userStates.set(ctx.from.id, { step: 'admin_awaiting_new_player_email', targetPlayerId: targetId });
+
+    return ctx.replyWithHTML(
+        `📧 <b>Зміна Email для гравця #${targetId}:</b>\n\nВведіть <b>нову електронну пошту</b> для цього акаунту:`,
+        Markup.inlineKeyboard([[Markup.button.callback('❌ Скасувати', 'admin_panel')]])
+    );
+});
+
+// Скидання 2FA гравцю
+bot.action(/^player_reset2fa_(\d+)$/, async (ctx) => {
+    if (!isSuperAdmin(ctx.from.id)) return ctx.answerCbQuery('Немає доступу').catch(() => {});
+    const targetId = parseInt(ctx.match[1], 10);
+    await ctx.answerCbQuery().catch(() => {});
+
+    if (dbPool && dbConnected) {
+        try {
+            await dbPool.execute('UPDATE ugta_players SET telegram_id = NULL, telegram_2fa_enabled = 0 WHERE id = ?', [targetId]);
+            return ctx.replyWithHTML(
+                `🔓 <b>2FA для гравця #${targetId} успішно скинуто!</b>\n\nТепер гравець може заходити без підтвердження або прив'язати новий Telegram.`,
+                Markup.inlineKeyboard([[Markup.button.callback('⬅️ В Адмін-панель', 'admin_panel')]])
+            );
+        } catch (e) {
+            return ctx.replyWithHTML(`❌ Помилка БД: ${e.message}`);
+        }
+    }
+});
+
+// 4. РОЗДІЛ: АКТИВНІ ДІАЛОГИ
 bot.action('admin_list_tickets', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('Немає доступу').catch(() => {});
+    if (!isTechAdmin(ctx.from.id)) return ctx.answerCbQuery('Немає доступу').catch(() => {});
     await ctx.answerCbQuery().catch(() => {});
 
     const openList = [];
@@ -489,7 +898,7 @@ bot.action(/^reply_ticket_(\d+)$/, async (ctx) => {
         const ticketId = parseInt(ctx.match[1], 10);
         const adminId = ctx.from.id;
 
-        if (!isAdmin(adminId)) {
+        if (!isTechAdmin(adminId)) {
             return ctx.answerCbQuery('❌ У вас немає прав оператора.', { show_alert: true }).catch(() => {});
         }
 
@@ -511,7 +920,7 @@ bot.action(/^close_ticket_(\d+)$/, async (ctx) => {
         const ticketId = parseInt(ctx.match[1], 10);
         const adminId = ctx.from.id;
 
-        if (!isAdmin(adminId)) {
+        if (!isTechAdmin(adminId)) {
             return ctx.answerCbQuery('❌ У вас немає прав оператора.', { show_alert: true }).catch(() => {});
         }
 
@@ -622,7 +1031,7 @@ bot.action(/^rate_op_(\d+)_([1-5])$/, async (ctx) => {
 
         // Сповіщаємо адмінів
         const adminScoreNotify = `⭐️ <b>Гравець (${ctx.from.first_name}) оцінив роботу оператора по Тікету #${ticketId} на ${score}/5 ${stars}!</b>`;
-        for (const adminId of ADMIN_IDS) {
+        for (const adminId of getAllSupportAdmins()) {
             try {
                 await bot.telegram.sendMessage(adminId, adminScoreNotify, { parse_mode: 'HTML' });
             } catch (e) {}
@@ -659,7 +1068,7 @@ bot.action(/^user_close_ticket_(\d+)$/, async (ctx) => {
         ).catch(() => {});
 
         const notifyAdminMsg = `ℹ️ <b>Гравець (${ctx.from.first_name}) завершив діалог Тікета #${ticketId}.</b>`;
-        for (const adminId of ADMIN_IDS) {
+        for (const adminId of getAllSupportAdmins()) {
             try {
                 await bot.telegram.sendMessage(adminId, notifyAdminMsg, { parse_mode: 'HTML' });
             } catch (e) {}
@@ -806,8 +1215,10 @@ bot.action('back_to_main', async (ctx) => {
     const userId = ctx.from.id;
 
     let welcomeMsg = `Вітаю, ${firstName}!\n\nЯ — твій віртуальний помічник у світі <b>KYIV GTA</b>.\n\nДля початку, обери бажану дію:`;
-    if (isAdmin(userId)) {
-        welcomeMsg += `\n\n👑 <b>Ви авторизовані як Адміністратор/Оператор KYIV GTA!</b>`;
+    if (isSuperAdmin(userId)) {
+        welcomeMsg += `\n\n👑 <b>Ви авторизовані як Власник / Головний Адміністратор KYIV GTA!</b>`;
+    } else if (isTechAdmin(userId)) {
+        welcomeMsg += `\n\n🛡️ <b>Тіма: Технічний Адміністратор KYIV GTA</b>\n👨‍💻 <b>Вітаю, ${firstName}! Ви авторизовані як Технічний Адміністратор!</b>\n<i>Вам автоматично надходитимуть усі звернення та репорти від гравців з їхнім нікнеймом та IP.</i>`;
     }
 
     await ctx.answerCbQuery().catch(() => {});
@@ -822,8 +1233,172 @@ bot.on('text', async (ctx) => {
         const state = userStates.get(userId);
         const now = Math.floor(Date.now() / 1000);
 
+        // 0. ДІЇ ГОЛОВНОГО АДМІНІСТРАТОРА (ВЛАСНИКА)
+        if (state && state.step === 'admin_awaiting_new_tech_id' && isSuperAdmin(userId)) {
+            userStates.delete(userId);
+
+            let targetId = null;
+            let targetName = 'Тех-Адмін';
+            let targetUser = '';
+
+            if (ctx.message.forward_from) {
+                targetId = String(ctx.message.forward_from.id);
+                targetName = ctx.message.forward_from.first_name || 'Тех-Адмін';
+                targetUser = ctx.message.forward_from.username || '';
+            } else {
+                let cleanText = text.replace(/^https?:\/\/t\.me\//i, '').replace(/^@/, '').trim();
+
+                if (/^\d+$/.test(cleanText)) {
+                    targetId = cleanText;
+                    const known = knownUsersMap.get(targetId);
+                    if (known) {
+                        targetName = known.firstName;
+                        targetUser = known.username;
+                    }
+                } else {
+                    const known = knownUsersMap.get(cleanText.toLowerCase());
+                    if (known) {
+                        targetId = known.id;
+                        targetName = known.firstName;
+                        targetUser = known.username;
+                    } else if (cleanText.toLowerCase() === 'maksmo8') {
+                        targetId = '6057411962';
+                        targetName = 'Maksmo';
+                        targetUser = 'Maksmo8';
+                    } else if (dbPool && dbConnected) {
+                        try {
+                            const [rows] = await dbPool.execute(
+                                'SELECT telegram_id, nickname FROM ugta_players WHERE LOWER(nickname) = LOWER(?) OR telegram_id = ? LIMIT 1',
+                                [cleanText, cleanText]
+                            );
+                            if (rows && rows.length > 0 && rows[0].telegram_id) {
+                                targetId = String(rows[0].telegram_id);
+                                targetName = rows[0].nickname;
+                            }
+                        } catch (e) {}
+                    }
+                }
+            }
+
+            if (!targetId) {
+                return ctx.replyWithHTML(
+                    `❌ <b>Не вдалося знайти користувача за запитом "${text}".</b>\n\nПереконайтеся, що користувач запустив нашого бота, або введіть його числовий Telegram ID (наприклад: <code>6057411962</code>):`,
+                    Markup.inlineKeyboard([
+                        [Markup.button.callback('➕ Спробувати ще раз', 'admin_add_tech_prompt')],
+                        [Markup.button.callback('⬅️ До списку тех-адмінів', 'admin_manage_techs')]
+                    ])
+                );
+            }
+
+            await grantTechAdmin(targetId, targetName, targetUser, userId);
+
+            return ctx.replyWithHTML(
+                `✅ <b>Вітаємо! ${targetName} (@${targetUser || targetId}) успішно призначено в тіму Технічних Адміністраторів!</b>\n\nКористувачу надіслано персональне сповіщення.`,
+                Markup.inlineKeyboard([[Markup.button.callback('⬅️ До списку тех-адмінів', 'admin_manage_techs')]])
+            );
+        }
+
+        if (state && state.step === 'admin_searching_player' && isSuperAdmin(userId)) {
+            userStates.delete(userId);
+            if (dbPool && dbConnected) {
+                try {
+                    const searchTerm = `%${text}%`;
+                    const [rows] = await dbPool.execute(
+                        'SELECT * FROM ugta_players WHERE id = ? OR LOWER(nickname) LIKE LOWER(?) OR LOWER(email) LIKE LOWER(?) OR telegram_id = ? LIMIT 5',
+                        [text, searchTerm, searchTerm, text]
+                    );
+
+                    if (!rows || rows.length === 0) {
+                        return ctx.replyWithHTML(
+                            `❌ <b>Гравця за запитом "${text}" не знайдено.</b>`,
+                            Markup.inlineKeyboard([
+                                [Markup.button.callback('🔍 Спробувати ще раз', 'admin_manage_players')],
+                                [Markup.button.callback('⬅️ В Адмін-панель', 'admin_panel')]
+                            ])
+                        );
+                    }
+
+                    for (const p of rows) {
+                        let playerIp = 'Невідомо';
+                        const [ipRow] = await dbPool.execute(
+                            'SELECT ip FROM ugta_player_telegram2fa_requests WHERE player_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 1',
+                            [p.id, p.telegram_id || '']
+                        );
+                        if (ipRow && ipRow.length > 0 && ipRow[0].ip) playerIp = ipRow[0].ip;
+
+                        const tgStatus = p.telegram_id 
+                            ? `✅ Прив'язано (ID: <code>${p.telegram_id}</code>)` 
+                            : '❌ Не прив\'язано';
+                        const faStatus = p.telegram_2fa_enabled == 1 ? '🟢 Активовано' : '🔴 Вимкнено';
+
+                        const infoMsg = 
+`👤 <b>Гравець:</b> <b>${p.nickname}</b> (ID: <code>#${p.id}</code>)
+📧 <b>Пошта (Email):</b> <code>${p.email}</code>
+🔑 <b>Пароль:</b> <code>${p.password}</code>
+🛡️ <b>2FA Telegram:</b> ${tgStatus} (${faStatus})
+🌐 <b>Останній IP:</b> <code>${playerIp}</code>`;
+
+                        const pButtons = [
+                            [
+                                Markup.button.callback('🔑 Змінити пароль', `player_pass_${p.id}`),
+                                Markup.button.callback('📧 Змінити Email', `player_email_${p.id}`)
+                            ]
+                        ];
+                        if (p.telegram_id || p.telegram_2fa_enabled) {
+                            pButtons.push([Markup.button.callback('🔓 Скинути 2FA / Telegram', `player_reset2fa_${p.id}`)]);
+                        }
+                        pButtons.push([Markup.button.callback('🔍 Новий пошук', 'admin_manage_players')]);
+                        pButtons.push([Markup.button.callback('⬅️ В Адмін-панель', 'admin_panel')]);
+
+                        await ctx.replyWithHTML(infoMsg, Markup.inlineKeyboard(pButtons));
+                    }
+                    return;
+                } catch (e) {
+                    return ctx.replyWithHTML(`❌ Помилка пошуку: ${e.message}`);
+                }
+            } else {
+                return ctx.replyWithHTML('❌ Немає з\'єднання з БД.');
+            }
+        }
+
+        if (state && state.step === 'admin_awaiting_new_player_pass' && isSuperAdmin(userId)) {
+            const targetId = state.targetPlayerId;
+            userStates.delete(userId);
+            const newPassword = text;
+
+            if (dbPool && dbConnected) {
+                try {
+                    await dbPool.execute('UPDATE ugta_players SET password = ? WHERE id = ?', [newPassword, targetId]);
+                    return ctx.replyWithHTML(
+                        `✅ <b>Пароль для гравця #${targetId} успішно змінено!</b>\n\n🔑 <b>Новий пароль:</b> <code>${newPassword}</code>`,
+                        Markup.inlineKeyboard([[Markup.button.callback('⬅️ В Адмін-панель', 'admin_panel')]])
+                    );
+                } catch (e) {
+                    return ctx.replyWithHTML(`❌ Помилка БД: ${e.message}`);
+                }
+            }
+        }
+
+        if (state && state.step === 'admin_awaiting_new_player_email' && isSuperAdmin(userId)) {
+            const targetId = state.targetPlayerId;
+            userStates.delete(userId);
+            const newEmail = text.toLowerCase().trim();
+
+            if (dbPool && dbConnected) {
+                try {
+                    await dbPool.execute('UPDATE ugta_players SET email = ?, login = ? WHERE id = ?', [newEmail, newEmail, targetId]);
+                    return ctx.replyWithHTML(
+                        `✅ <b>Email для гравця #${targetId} успішно змінено!</b>\n\n📧 <b>Нова пошта:</b> <code>${newEmail}</code>`,
+                        Markup.inlineKeyboard([[Markup.button.callback('⬅️ В Адмін-панель', 'admin_panel')]])
+                    );
+                } catch (e) {
+                    return ctx.replyWithHTML(`❌ Помилка БД: ${e.message}`);
+                }
+            }
+        }
+
         // 1. Відповідь оператора
-        if (state && state.step === 'replying_to_ticket' && isAdmin(userId)) {
+        if (state && state.step === 'replying_to_ticket' && isTechAdmin(userId)) {
             const ticketId = state.ticketId;
             userStates.delete(userId);
 
@@ -863,7 +1438,7 @@ ${text}
             );
 
             const adminNotifyText = `ℹ️ <b>Оператор (${ctx.from.first_name}) надіслав повідомлення у Тікет #${ticketId}:</b>\n<i>"${text}"</i>`;
-            for (const adminId of ADMIN_IDS) {
+            for (const adminId of getAllSupportAdmins()) {
                 if (String(adminId) !== String(userId)) {
                     try {
                         await bot.telegram.sendMessage(adminId, adminNotifyText, { parse_mode: 'HTML' });
@@ -1053,11 +1628,36 @@ ${text}
                 Markup.inlineKeyboard([[Markup.button.callback('🔒 Завершити діалог', `user_close_ticket_${ticketId}`)]])
             );
 
+            // Отримуємо IP та нікнейм гравця з бази
+            let playerIp = 'Невідомо';
+            let playerGameNick = user.first_name || 'Гравець';
+            if (dbPool && dbConnected) {
+                try {
+                    const [reqRows] = await dbPool.execute(
+                        'SELECT ip, nickname FROM ugta_player_telegram2fa_requests WHERE telegram_id = ? ORDER BY id DESC LIMIT 1',
+                        [String(user.id)]
+                    );
+                    if (reqRows.length > 0) {
+                        if (reqRows[0].ip) playerIp = reqRows[0].ip;
+                        if (reqRows[0].nickname) playerGameNick = reqRows[0].nickname;
+                    } else {
+                        const [pRows] = await dbPool.execute(
+                            'SELECT nickname FROM ugta_players WHERE telegram_id = ? LIMIT 1',
+                            [String(user.id)]
+                        );
+                        if (pRows.length > 0 && pRows[0].nickname) {
+                            playerGameNick = pRows[0].nickname;
+                        }
+                    }
+                } catch (e) {}
+            }
+
             const alertText = 
 `📩 <b>KYIV GTA | Нове звернення в тех. підтримку (Тікет #${ticketId})</b>
 
-👤 <b>Гравець:</b> ${user.first_name || 'Гравець'} (${user.username ? '@' + user.username : 'без юзернейму'})
+👤 <b>Гравець:</b> <b>${playerGameNick}</b> (${user.username ? '@' + user.username : user.first_name})
 🆔 <b>Telegram ID:</b> <code>${user.id}</code>
+🌐 <b>IP гравця:</b> <code>${playerIp}</code>
 🕒 <b>Час:</b> ${formatDate(now)}
 
 💬 <b>Повідомлення:</b>
@@ -1070,7 +1670,7 @@ ${text}
                 ]
             ]);
 
-            for (const adminId of ADMIN_IDS) {
+            for (const adminId of getAllSupportAdmins()) {
                 try {
                     await bot.telegram.sendMessage(adminId, alertText, { parse_mode: 'HTML', ...adminKeyboard });
                 } catch (e) {}
@@ -1091,10 +1691,23 @@ ${text}
                 Markup.inlineKeyboard([[Markup.button.callback('🔒 Завершити діалог', `user_close_ticket_${ticketId}`)]])
             );
 
+            // Отримуємо IP гравця
+            let playerIp = 'Невідомо';
+            if (dbPool && dbConnected) {
+                try {
+                    const [reqRows] = await dbPool.execute(
+                        'SELECT ip FROM ugta_player_telegram2fa_requests WHERE telegram_id = ? ORDER BY id DESC LIMIT 1',
+                        [String(user.id)]
+                    );
+                    if (reqRows.length > 0 && reqRows[0].ip) playerIp = reqRows[0].ip;
+                } catch (e) {}
+            }
+
             const alertText = 
 `💬 <b>KYIV GTA | Додаткове повідомлення в Тікет #${ticketId}</b>
 
 👤 <b>Гравець:</b> ${user.first_name || 'Гравець'} (${user.username ? '@' + user.username : 'без юзернейму'})
+🌐 <b>IP:</b> <code>${playerIp}</code>
 🕒 <b>Час:</b> ${formatDate(now)}
 
 📝 <b>Текст:</b>
@@ -1107,7 +1720,7 @@ ${text}
                 ]
             ]);
 
-            for (const adminId of ADMIN_IDS) {
+            for (const adminId of getAllSupportAdmins()) {
                 try {
                     await bot.telegram.sendMessage(adminId, alertText, { parse_mode: 'HTML', ...adminKeyboard });
                 } catch (e) {}
@@ -1278,7 +1891,9 @@ async function main() {
     setInterval(checkPendingLoginRequests, 2000);
 
     try {
-        await bot.launch();
+        bot.launch().catch((err) => {
+            console.error('🔴 Помилка запуску бота:', err.message);
+        });
         console.log('🤖 Telegram 2FA & Support Бот успішно запущено (KYIV GTA)!');
         console.log(`👑 Додано Адміністраторів: ${ADMIN_IDS.join(', ')}`);
     } catch (err) {
